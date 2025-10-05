@@ -1,0 +1,14 @@
+utils/
+.DS_Store
+.idea/
+.vscode/
+.env
+.next/
+node_modules/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+__pycache__/
+*.pyc
+service_account.json

@@ -295,3 +295,56 @@ class QuizRequest(BaseModel):
     section_title: Optional[str] = None
     subsection_title: Optional[str] = None
     regenerate: bool = False
+
+# Explanation Models
+class ExplanationCache(BaseModel):
+    """Model for cached explanations"""
+    unique_key: str
+    pdf_id: str
+    topic: str
+    start_page: int
+    end_page: int
+    text_content: str
+    audio_url: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ExplanationRequest(BaseModel):
+    """Request model for generating explanations"""
+    start_page: int
+    end_page: int
+    topic: str
+    section_title: Optional[str] = None
+    subsection_title: Optional[str] = None
+
+class ExplanationResponse(BaseModel):
+    """Response model for explanations"""
+    text_content: str
+    audio_url: str
+    topic: str
+    start_page: int
+    end_page: int
+    cached: bool = False
+
+class QARequest(BaseModel):
+    """Request model for Q&A"""
+    question: str
+    explanation_text: str
+    topic: str
+
+class QAResponse(BaseModel):
+    """Response model for Q&A"""
+    question_text: Optional[str] = None  # Transcribed question (if audio input)
+    answer_text: str
+    audio_base64: str  # Base64 encoded audio
+    audio_format: str = "mp3"  # mp3 or wav
+
+class PDFChatRequest(BaseModel):
+    """Request model for PDF chat"""
+    query: str
+    start_page: int
+    end_page: int
+
+class PDFChatResponse(BaseModel):
+    """Response model for PDF chat"""
+    answer: str

@@ -23,7 +23,8 @@ class ContentService:
     async def download_pdf_from_cloudinary(self, cloudinary_url: str) -> str:
         """Download PDF from Cloudinary and save to temporary file"""
         try:
-            async with httpx.AsyncClient() as client:
+            # Increase timeout for large PDFs
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.get(cloudinary_url)
                 response.raise_for_status()
                 
@@ -103,6 +104,33 @@ class ContentService:
         new_doc.close()
         
         return pdf_bytes
+
+    def _extract_pages_as_images(self, pdf_doc: fitz.Document, start_page: int, end_page: int, zoom: float = 2.0) -> list:
+        """
+        Extract PDF pages as images (PNG format).
+        Returns a list of base64-encoded image strings.
+        """
+        import base64
+        
+        images = []
+        start_idx = start_page - 1
+        end_idx = end_page - 1
+        
+        for page_num in range(start_idx, end_idx + 1):
+            if page_num < len(pdf_doc):
+                page = pdf_doc[page_num]
+                # Render page to image with zoom factor for better quality
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                
+                # Convert to PNG bytes
+                img_bytes = pix.tobytes("png")
+                
+                # Encode to base64
+                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                images.append(img_base64)
+        
+        return images
 
     async def generate_content(self, pdf_id: str, cloudinary_url: str, start_page: int, end_page: int, topic: str, content_type: str) -> Dict[str, Any]:
         """

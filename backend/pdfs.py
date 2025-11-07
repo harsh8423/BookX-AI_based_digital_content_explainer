@@ -213,6 +213,66 @@ async def get_pdf_pages(
             detail=f"Failed to extract PDF pages: {str(e)}"
         )
 
+@pdf_router.get("/{pdf_id}/pages/images")
+async def get_pdf_pages_as_images(
+    pdf_id: str,
+    start_page: int = Query(..., ge=1, description="Starting page number (1-indexed)"),
+    end_page: int = Query(..., ge=1, description="Ending page number (1-indexed)"),
+    zoom: float = Query(2.0, ge=0.5, le=5.0, description="Zoom factor for image quality"),
+    current_user: User = Depends(get_current_user)
+):
+    """Extract and return specific PDF pages as images (base64-encoded PNG)"""
+    try:
+        from bson import ObjectId
+        
+        # Get PDF document
+        pdfs_collection = await get_pdfs_collection()
+        pdf_doc = await pdfs_collection.find_one({
+            "_id": ObjectId(pdf_id),
+            "user_id": str(current_user.id)
+        })
+        
+        if not pdf_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF not found"
+            )
+        
+        # Load PDF and extract pages
+        pdf_doc_obj = await content_service.load_pdf(pdf_id, pdf_doc['cloudinary_url'])
+        
+        # Validate page range
+        if start_page < 1 or end_page > len(pdf_doc_obj) or start_page > end_page:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid page range. PDF has {len(pdf_doc_obj)} pages."
+            )
+        
+        # Extract pages as images
+        images = content_service._extract_pages_as_images(pdf_doc_obj, start_page, end_page, zoom)
+        
+        # Return as JSON with base64 images
+        return {
+            "pages": [
+                {
+                    "page_number": start_page + i,
+                    "image_base64": img
+                }
+                for i, img in enumerate(images)
+            ],
+            "start_page": start_page,
+            "end_page": end_page,
+            "total_pages": len(images)
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extract PDF pages as images: {str(e)}"
+        )
+
 @pdf_router.get("/{pdf_id}", response_model=PDFResponse)
 async def get_pdf(
     pdf_id: str,

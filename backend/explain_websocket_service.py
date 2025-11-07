@@ -192,8 +192,27 @@ Remember: You are the tutor, the student is asking questions during your explana
             # Pause explanation
             self.is_paused = True
             
-            # Add user question to context
-            self.conversation_context.append({
+            # Update context with explanation text reference
+            enhanced_context = [
+                {
+                    "role": "system",
+                    "content": f"""You are a knowledgeable tutor explaining the topic: "{self.topic}". 
+                    
+Current explanation content: "{self.current_content}"
+
+When the student asks a question:
+1. Answer clearly and helpfully based on the explanation content
+2. Keep responses concise but informative
+3. After answering, add: "I hope your doubts are clear now. Let's move back to the topic."
+4. Use "I" when referring to yourself as the tutor
+5. Address the student directly with "you"
+
+Remember: You are the tutor helping the student understand the material."""
+                }
+            ]
+            
+            # Add user question
+            enhanced_context.append({
                 "role": "user",
                 "content": question
             })
@@ -201,10 +220,10 @@ Remember: You are the tutor, the student is asking questions during your explana
             # Send question received signal
             await self.websocket_service._send_question_received(self.pdf_id, question)
             
-            # Generate tutor response
+            # Generate tutor response with Groq streaming
             response = groq_client.chat.completions.create(
                 model=GROQ_CHAT_MODEL,
-                messages=self.conversation_context,
+                messages=enhanced_context,
                 stream=True,
                 temperature=0.7,
                 max_tokens=500
@@ -219,33 +238,19 @@ Remember: You are the tutor, the student is asking questions during your explana
                         chunk.choices[0].delta.content
                     )
             
-            # Add tutor response to context
-            self.conversation_context.append({
-                "role": "assistant",
-                "content": tutor_response
-            })
-            
             # Send response complete signal
             await self.websocket_service._send_tutor_response_complete(self.pdf_id, tutor_response)
             
             # Generate and stream audio response
             await self._stream_tutor_response_audio(tutor_response)
             
-            # Resume explanation after a brief pause
-            await asyncio.sleep(1.0)
-            self.is_paused = False
-            
-            # Continue with explanation
-            if self.is_explaining:
-                await self._process_explanation_with_audio()
+            # Note: Frontend will automatically resume main audio when Q&A audio finishes playing
+            # No need to send resume signal here - let the frontend handle it via audio.onended callback
             
         except Exception as e:
             logger.error(f"Error handling user question: {e}")
             await self.websocket_service._send_error(self.pdf_id, f"Error processing question: {str(e)}")
-            # Resume explanation even if there was an error
-            self.is_paused = False
-            if self.is_explaining:
-                await self._process_explanation_with_audio()
+            # Frontend will handle resume on error too via the audio playback completion
     
     async def _stream_tutor_response_audio(self, response_text: str):
         """Stream tutor response audio"""
@@ -309,15 +314,24 @@ class ExplainWebSocketService:
             del self.explain_sessions[pdf_id]
 
     async def start_explanation(self, pdf_id: str, content: str, topic: str, section_title: str = "", subsection_title: str = "", start_page: int = 0, end_page: int = 0, reading_content: str = ""):
-        """Start explanation session"""
-        logger.info(f"Starting explanation for PDF {pdf_id} with topic: {topic}")
+        """Start explanation session - for Q&A support only, not for generating explanations"""
+        logger.info(f"Starting Q&A session for PDF {pdf_id} with topic: {topic}")
         logger.info(f"Section: {section_title}, Subsection: {subsection_title}, Pages: {start_page}-{end_page}")
         logger.info(f"Content length: {len(content) if content else 0}")
         
         if pdf_id in self.explain_sessions:
-            await self.explain_sessions[pdf_id].start_explanation(
-                content, topic, section_title, subsection_title, start_page, end_page, reading_content
-            )
+            session = self.explain_sessions[pdf_id]
+            # Store content for Q&A context
+            session.current_content = content
+            session.topic = topic
+            session.section_title = section_title
+            session.subsection_title = subsection_title
+            session.start_page = start_page
+            session.end_page = end_page
+            session.reading_content = reading_content or content
+            
+            # Send confirmation
+            await self._send_explanation_start(pdf_id)
         else:
             logger.error(f"No session found for PDF {pdf_id}")
             await self._send_error(pdf_id, "No active session found")
@@ -494,6 +508,13 @@ class ExplainWebSocketService:
         if pdf_id in self.active_connections:
             await self.active_connections[pdf_id].send_json({
                 "type": "tutor_audio_complete"
+            })
+    
+    async def _send_resume_explanation_signal(self, pdf_id: str):
+        """Send signal to frontend to resume main explanation audio"""
+        if pdf_id in self.active_connections:
+            await self.active_connections[pdf_id].send_json({
+                "type": "resume_main_explanation"
             })
 
 # Global service instance

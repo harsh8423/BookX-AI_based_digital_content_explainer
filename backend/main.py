@@ -21,6 +21,7 @@ from auth import auth_router
 from content_service import content_service
 from database import get_database
 from explain_websocket_service import explain_websocket_service
+from explanation_service import explanation_router
 from flashcard_service import flashcard_service
 from models import (
     ContentRequest,
@@ -85,6 +86,7 @@ app.add_middleware(
 # Include routers
 app.include_router(auth_router, prefix="/auth", tags=["authentication"])
 app.include_router(pdf_router, prefix="/pdfs", tags=["pdfs"])
+app.include_router(explanation_router, prefix="/api/pdfs", tags=["explanations"])
 
 @app.get("/")
 async def root():

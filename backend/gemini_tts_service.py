@@ -9,6 +9,9 @@ import tempfile
 import logging
 import base64
 import sys
+import json
+import binascii
+import httpx
 from typing import Dict, Any, Optional, AsyncGenerator
 from google import genai
 from google.genai import types
@@ -26,9 +29,19 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# Minimax API setup
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY")
+
 # Cloudinary setup (using unsigned uploads)
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_UPLOAD_PRESET = os.getenv("CLOUDINARY_UPLOAD_PRESET")
+
+# Configure cloudinary
+if CLOUDINARY_CLOUD_NAME:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        secure=True
+    )
 
 
 def wave_file(filename: str, pcm: bytes, channels: int = 1, rate: int = 24000, sample_width: int = 2):
@@ -49,6 +62,96 @@ def wave_file(filename: str, pcm: bytes, channels: int = 1, rate: int = 24000, s
         wf.writeframes(pcm)
 
 
+async def generate_minimax_audio_async(text: str, voice_id: str = "moss_audio_d1efbcbb-a84b-11f0-acd3-2a7238f4ad26") -> AsyncGenerator[bytes, None]:
+    """
+    Generate audio using Minimax TTS API (async generator for streaming).
+    
+    Args:
+        text: Text to convert to speech
+        voice_id: Voice ID to use
+        
+    Yields:
+        Audio chunks as bytes
+    """
+    if not MINIMAX_API_KEY:
+        raise Exception("Minimax API key not configured")
+    
+    logger.info(f"MinimaxTTS: Generating audio (text length: {len(text)})")
+    
+    try:
+        # Build payload
+        payload = {
+            "model": "speech-2.5-hd-preview",
+            "text": text,
+            "stream": False,
+            "language_boost": "auto",
+            "output_format": "hex",
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": 1.0,
+                "vol": 1.0,
+                "pitch": 0
+            },
+            "audio_setting": {
+                "sample_rate": 32000,
+                "bitrate": 128000,
+                "format": "mp3",
+                "channel": 1
+            }
+        }
+        
+        headers = {
+            'Authorization': f'Bearer {MINIMAX_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Make async API call
+        url = "https://api.minimax.io/v1/t2a_v2"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            response_data = response.json()
+        
+        # Check for API errors
+        if response_data.get("base_resp", {}).get("status_code") != 0:
+            raise Exception(f"Minimax API Error: {response_data.get('base_resp', {}).get('status_msg', 'Unknown error')}")
+        
+        # Extract hex audio data
+        data_field = response_data.get("data")
+        if not data_field:
+            raise Exception(f"No data field returned from Minimax API. Response keys: {list(response_data.keys())}")
+        
+        hex_audio = data_field.get("audio")
+        if not hex_audio or not isinstance(hex_audio, str):
+            raise Exception(f"No valid audio field in Minimax response")
+        
+        # Convert hex to MP3 bytes
+        try:
+            hex_clean = hex_audio.replace(' ', '').replace('\n', '').replace('\r', '')
+            audio_bytes = binascii.unhexlify(hex_clean)
+        except Exception as e:
+            raise Exception(f"Failed to convert hex audio: {str(e)}")
+        
+        logger.info(f"MinimaxTTS: Generated audio ({len(audio_bytes)} bytes)")
+        
+        # Yield audio in chunks for streaming
+        chunk_size = 4096
+        chunk_count = 0
+        offset = 0
+        while offset < len(audio_bytes):
+            chunk = audio_bytes[offset:offset + chunk_size]
+            chunk_count += 1
+            logger.debug(f"MinimaxTTS: Yielding chunk {chunk_count}, size: {len(chunk)} bytes")
+            yield chunk
+            offset += chunk_size
+        
+        logger.info(f"MinimaxTTS: Streamed {chunk_count} chunks")
+        
+    except Exception as e:
+        logger.error(f"MinimaxTTS: Error generating audio: {e}", exc_info=True)
+        raise
+
+
 def upload_to_cloudinary(file_path: str, cloudinary_options: Optional[Dict] = None) -> Dict[str, Any]:
     """
     Upload file to Cloudinary using unsigned upload.
@@ -65,19 +168,24 @@ def upload_to_cloudinary(file_path: str, cloudinary_options: Optional[Dict] = No
     
     options = cloudinary_options or {}
     
-    # Set default options
+    # Set default options for unsigned upload
     upload_options = {
         "upload_preset": CLOUDINARY_UPLOAD_PRESET,
         "folder": options.get("folder", "bookx/audio"),
         "resource_type": "raw",
+        "unsigned": True,  # Important: Mark as unsigned upload
     }
     
     # Add any additional options
     if "public_id" in options:
         upload_options["public_id"] = options["public_id"]
     
-    # Upload file
-    result = cloudinary.uploader.upload(file_path, **upload_options)
+    # Upload file using unsigned upload
+    result = cloudinary.uploader.unsigned_upload(
+        file_path, 
+        CLOUDINARY_UPLOAD_PRESET,
+        **{k: v for k, v in upload_options.items() if k != 'upload_preset' and k != 'unsigned'}
+    )
     
     return {
         "secure_url": result.get("secure_url"),
@@ -184,35 +292,38 @@ class GeminiTTSService:
         self.client = gemini_client
     
     async def generate_explanation_audio(self, content: str, topic: str) -> AsyncGenerator[bytes, None]:
-        """Generate audio explanation with multi-speaker TTS (async generator for streaming)"""
+        """
+        Generate audio explanation - tries Minimax first, falls back to Gemini.
+        Async generator for streaming.
+        """
+        logger.info(f"TTS: Generating audio for topic: {topic}")
+        logger.info(f"TTS: Content length: {len(content)}")
+        
+        # Try Minimax first
+        if MINIMAX_API_KEY:
+            try:
+                logger.info("TTS: Attempting Minimax TTS...")
+                async for chunk in generate_minimax_audio_async(content):
+                    yield chunk
+                logger.info("TTS: Successfully generated audio using Minimax")
+                return
+            except Exception as minimax_error:
+                logger.warning(f"TTS: Minimax failed: {minimax_error}. Falling back to Gemini...")
+        else:
+            logger.info("TTS: Minimax API key not configured. Using Gemini...")
+        
+        # Fallback to Gemini
         if not self.client:
-            raise Exception("Gemini client not configured")
+            raise Exception("Neither Minimax nor Gemini client configured")
         
-        logger.info(f"GeminiTTS: Generating audio for topic: {topic}")
-        logger.info(f"GeminiTTS: Content length: {len(content)}")
-        
-        # Enhanced prompt for multi-speaker TTS
-        enhanced_prompt = f"""Create a lively educational conversation about "{topic}" between a knowledgeable tutor and a curious student.
-
-Tutor: Should sound warm, knowledgeable, and engaging. Use a teaching tone that's clear and encouraging.
-Student: Should sound curious, asking thoughtful questions, and showing understanding.
-
-Format the conversation like this:
-Tutor: [explanation content]
-Student: [thoughtful question or comment]
-Tutor: [continuing explanation]
-
-Make it feel like a natural conversation while covering the topic comprehensively. The tutor should explain concepts clearly, and the student should ask clarifying questions that help deepen understanding.
-
-Content to explain: {content}
-
-Create an engaging conversation that makes learning enjoyable and interactive."""
+        logger.info("TTS: Using Gemini TTS as fallback...")
+        tts_text = content
 
         try:
             logger.info("GeminiTTS: Calling Gemini API for TTS generation...")
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash-preview-tts",
-                contents=enhanced_prompt,
+                contents=tts_text,
                 config=types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
@@ -230,50 +341,60 @@ Create an engaging conversation that makes learning enjoyable and interactive.""
             # Extract audio data
             if (response.candidates and 
                 response.candidates[0].content and 
-                response.candidates[0].content.parts and
-                response.candidates[0].content.parts[0].inline_data):
+                response.candidates[0].content.parts):
                 
-                inline_data = response.candidates[0].content.parts[0].inline_data
-                audio_data_b64 = inline_data.data
-                mime_type = inline_data.mime_type
+                # Find the part with inline_data (audio)
+                audio_part = None
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        audio_part = part
+                        break
                 
-                logger.info(f"GeminiTTS: Audio data received, MIME type: {mime_type}")
-                
-                # Decode base64 to get raw PCM audio bytes
-                pcm_audio = base64.b64decode(audio_data_b64)
-                
-                # Create temporary WAV file
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-                temp_filename = temp_file.name
-                temp_file.close()
-                
-                try:
-                    # Write to WAV file with proper parameters
-                    wave_file(temp_filename, pcm_audio, channels=1, rate=24000, sample_width=2)
+                if audio_part and audio_part.inline_data:
+                    inline_data = audio_part.inline_data
+                    audio_data_b64 = inline_data.data
+                    mime_type = inline_data.mime_type
                     
-                    # Read WAV file and yield in chunks for streaming
-                    chunk_size = 4096
-                    chunk_count = 0
-                    with open(temp_filename, 'rb') as wav_file:
-                        while True:
-                            chunk = wav_file.read(chunk_size)
-                            if not chunk:
-                                break
-                            chunk_count += 1
-                            logger.debug(f"GeminiTTS: Yielding chunk {chunk_count}, size: {len(chunk)} bytes")
-                            yield chunk
+                    logger.info(f"GeminiTTS: Audio data received, MIME type: {mime_type}")
                     
-                    logger.info(f"GeminiTTS: Streamed {chunk_count} chunks")
+                    # Decode base64 to get raw PCM audio bytes
+                    pcm_audio = base64.b64decode(audio_data_b64)
                     
-                finally:
-                    # Clean up temporary file
-                    if os.path.exists(temp_filename):
-                        try:
-                            os.unlink(temp_filename)
-                        except:
-                            pass
+                    # Create temporary WAV file
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                    temp_filename = temp_file.name
+                    temp_file.close()
+                    
+                    try:
+                        # Write to WAV file with proper parameters
+                        wave_file(temp_filename, pcm_audio, channels=1, rate=24000, sample_width=2)
+                        
+                        # Read WAV file and yield in chunks for streaming
+                        chunk_size = 4096
+                        chunk_count = 0
+                        with open(temp_filename, 'rb') as wav_file:
+                            while True:
+                                chunk = wav_file.read(chunk_size)
+                                if not chunk:
+                                    break
+                                chunk_count += 1
+                                logger.debug(f"GeminiTTS: Yielding chunk {chunk_count}, size: {len(chunk)} bytes")
+                                yield chunk
+                        
+                        logger.info(f"GeminiTTS: Streamed {chunk_count} chunks")
+                        
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_filename):
+                            try:
+                                os.unlink(temp_filename)
+                            except:
+                                pass
+                else:
+                    logger.error("GeminiTTS: No audio part found in response")
+                    raise Exception("No audio data received from Gemini TTS")
             else:
-                logger.error("GeminiTTS: No audio data received from Gemini TTS")
+                logger.error("GeminiTTS: Response structure is invalid")
                 raise Exception("No audio data received from Gemini TTS")
                 
         except Exception as e:
@@ -281,17 +402,31 @@ Create an engaging conversation that makes learning enjoyable and interactive.""
             raise
     
     async def generate_tutor_response_audio(self, response_text: str) -> AsyncGenerator[bytes, None]:
-        """Generate audio for tutor responses to user questions (async generator for streaming)"""
-        if not self.client:
-            raise Exception("Gemini client not configured")
+        """
+        Generate audio for tutor responses to user questions.
+        Tries Minimax first, falls back to Gemini.
+        """
+        # Try Minimax first
+        if MINIMAX_API_KEY:
+            try:
+                logger.info("TTS: Attempting Minimax for tutor response...")
+                async for chunk in generate_minimax_audio_async(response_text):
+                    yield chunk
+                logger.info("TTS: Successfully generated tutor response using Minimax")
+                return
+            except Exception as minimax_error:
+                logger.warning(f"TTS: Minimax failed for tutor response: {minimax_error}. Falling back to Gemini...")
         
-        # Format for single speaker (tutor)
-        formatted_prompt = f"""Tutor: {response_text}"""
+        # Fallback to Gemini
+        if not self.client:
+            raise Exception("Neither Minimax nor Gemini client configured")
+        
+        logger.info("TTS: Using Gemini TTS for tutor response...")
         
         try:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash-preview-tts",
-                contents=formatted_prompt,
+                contents=response_text,
                 config=types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
@@ -307,41 +442,50 @@ Create an engaging conversation that makes learning enjoyable and interactive.""
             # Extract audio data
             if (response.candidates and 
                 response.candidates[0].content and 
-                response.candidates[0].content.parts and
-                response.candidates[0].content.parts[0].inline_data):
+                response.candidates[0].content.parts):
                 
-                inline_data = response.candidates[0].content.parts[0].inline_data
-                audio_data_b64 = inline_data.data
-                mime_type = inline_data.mime_type
+                # Find the part with inline_data (audio)
+                audio_part = None
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        audio_part = part
+                        break
                 
-                # Decode base64 to get raw PCM audio bytes
-                pcm_audio = base64.b64decode(audio_data_b64)
-                
-                # Create temporary WAV file
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-                temp_filename = temp_file.name
-                temp_file.close()
-                
-                try:
-                    # Write to WAV file
-                    wave_file(temp_filename, pcm_audio, channels=1, rate=24000, sample_width=2)
+                if audio_part and audio_part.inline_data:
+                    inline_data = audio_part.inline_data
+                    audio_data_b64 = inline_data.data
+                    mime_type = inline_data.mime_type
                     
-                    # Read and yield in chunks for streaming
-                    chunk_size = 4096
-                    with open(temp_filename, 'rb') as wav_file:
-                        while True:
-                            chunk = wav_file.read(chunk_size)
-                            if not chunk:
-                                break
-                            yield chunk
+                    # Decode base64 to get raw PCM audio bytes
+                    pcm_audio = base64.b64decode(audio_data_b64)
+                    
+                    # Create temporary WAV file
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                    temp_filename = temp_file.name
+                    temp_file.close()
+                    
+                    try:
+                        # Write to WAV file
+                        wave_file(temp_filename, pcm_audio, channels=1, rate=24000, sample_width=2)
+                        
+                        # Read and yield in chunks for streaming
+                        chunk_size = 4096
+                        with open(temp_filename, 'rb') as wav_file:
+                            while True:
+                                chunk = wav_file.read(chunk_size)
+                                if not chunk:
+                                    break
+                                yield chunk
                             
-                finally:
-                    # Clean up temporary file
-                    if os.path.exists(temp_filename):
-                        try:
-                            os.unlink(temp_filename)
-                        except:
-                            pass
+                    finally:
+                        # Clean up temporary file
+                        if os.path.exists(temp_filename):
+                            try:
+                                os.unlink(temp_filename)
+                            except:
+                                pass
+                else:
+                    raise Exception("No audio data received from Gemini TTS")
             else:
                 raise Exception("No audio data received from Gemini TTS")
                 
@@ -354,14 +498,86 @@ Create an engaging conversation that makes learning enjoyable and interactive.""
         try:
             # Collect all audio data
             audio_chunks = []
-            async for chunk in self.generate_explanation_audio(content, topic):
-                audio_chunks.append(chunk)
+            used_minimax = False
+            
+            # Try Minimax first
+            if MINIMAX_API_KEY:
+                try:
+                    logger.info("TTS: Attempting Minimax for explanation audio...")
+                    async for chunk in generate_minimax_audio_async(content):
+                        audio_chunks.append(chunk)
+                    used_minimax = True
+                    logger.info("TTS: Successfully generated audio using Minimax")
+                except Exception as minimax_error:
+                    logger.warning(f"TTS: Minimax failed: {minimax_error}. Falling back to Gemini...")
+                    audio_chunks = []  # Reset chunks
+            
+            # Fallback to Gemini if Minimax failed or not configured
+            if not used_minimax:
+                if not self.client:
+                    raise Exception("Neither Minimax nor Gemini client configured")
+                
+                logger.info("TTS: Using Gemini TTS as fallback...")
+                # Call Gemini directly to avoid double-trying Minimax
+                tts_text = content
+                try:
+                    response = self.client.models.generate_content(
+                        model="gemini-2.5-flash-preview-tts",
+                        contents=tts_text,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["AUDIO"],
+                            speech_config=types.SpeechConfig(
+                                voice_config=types.VoiceConfig(
+                                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                        voice_name="Kore"
+                                    )
+                                )
+                            )
+                        )
+                    )
+                    
+                    # Extract audio data
+                    if (response.candidates and 
+                        response.candidates[0].content and 
+                        response.candidates[0].content.parts):
+                        
+                        audio_part = None
+                        for part in response.candidates[0].content.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                audio_part = part
+                                break
+                        
+                        if audio_part and audio_part.inline_data:
+                            inline_data = audio_part.inline_data
+                            audio_data_b64 = inline_data.data
+                            pcm_audio = base64.b64decode(audio_data_b64)
+                            
+                            # Create temporary WAV file
+                            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                            temp_filename = temp_file.name
+                            temp_file.close()
+                            
+                            try:
+                                wave_file(temp_filename, pcm_audio, channels=1, rate=24000, sample_width=2)
+                                with open(temp_filename, 'rb') as wav_file:
+                                    audio_chunks.append(wav_file.read())
+                            finally:
+                                if os.path.exists(temp_filename):
+                                    try:
+                                        os.unlink(temp_filename)
+                                    except:
+                                        pass
+                except Exception as gemini_error:
+                    raise Exception(f"Gemini TTS failed: {str(gemini_error)}")
             
             # Combine chunks
             full_audio_data = b''.join(audio_chunks)
             
+            # Determine file extension based on which service was used
+            file_ext = '.mp3' if used_minimax else '.wav'
+            
             # Create temporary file for upload
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
             temp_filename = temp_file.name
             temp_file.write(full_audio_data)
             temp_file.close()
@@ -377,7 +593,8 @@ Create an engaging conversation that makes learning enjoyable and interactive.""
                 return {
                     "audio_url": cloudinary_result.get("secure_url"),
                     "audio_size": len(full_audio_data),
-                    "success": True
+                    "success": True,
+                    "provider": "minimax" if used_minimax else "gemini"
                 }
             finally:
                 # Clean up temporary file

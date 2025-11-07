@@ -122,3 +122,7 @@ async def get_quizzes_collection():
 async def get_quiz_attempts_collection():
     db = await get_database()
     return db.quiz_attempts
+
+async def get_explanations_collection():
+    db = await get_database()
+    return db.explanations

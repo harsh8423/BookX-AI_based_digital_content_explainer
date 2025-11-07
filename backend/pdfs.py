@@ -63,7 +63,7 @@ async def process_pdf(
     """Process uploaded PDF from Cloudinary and analyze with Gemini"""
     try:
         # Validate file size (20MB limit)
-        if request.size > 20 * 1024 * 1024:
+        if request.size > 25 * 1024 * 1024:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="File size exceeds 20MB limit"

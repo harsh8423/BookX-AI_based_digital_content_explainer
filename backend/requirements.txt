@@ -12,6 +12,8 @@ google-auth-httplib2==0.1.1
 python-dotenv==1.0.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
+pyOpenSSL>=23.2.0
+cryptography>=41.0.0
 google-generativeai
 PyPDF2
 google-genai

@@ -23,7 +23,7 @@ export default function PDFUpload({ onUploadSuccess }) {
       }
 
       // Validate file size (20MB limit)
-      if (file.size > 20 * 1024 * 1024) {
+      if (file.size > 25 * 1024 * 1024) {
         setError('File size must be less than 20MB')
         return
       }
@@ -140,7 +140,7 @@ export default function PDFUpload({ onUploadSuccess }) {
               {isUploading ? 'Uploading...' : 'Click to upload or drag and drop'}
             </p>
             <p className="text-xs text-gray-500 mt-1">
-              PDF files only (max 20MB, 1000 pages)
+              PDF files only (max 25MB, 1000 pages)
             </p>
           </div>
         </div>

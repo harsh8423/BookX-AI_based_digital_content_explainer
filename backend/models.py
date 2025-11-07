@@ -265,3 +265,33 @@ class QuizAttempt(BaseModel):
 
 class QuizAttemptResponse(QuizAttempt):
     id: str
+
+# Request Models for API Endpoints
+class ContentRequest(BaseModel):
+    """Request model for generating content (read or explain)"""
+    start_page: int
+    end_page: int
+    topic: str
+    type: str  # 'read' or 'explain'
+    section_title: Optional[str] = None
+    subsection_title: Optional[str] = None
+
+class FlashcardRequest(BaseModel):
+    """Request model for generating flashcards"""
+    start_page: int
+    end_page: int
+    topic: str
+    type: str = "flashcards"
+    section_title: Optional[str] = None
+    subsection_title: Optional[str] = None
+    regenerate: bool = False
+
+class QuizRequest(BaseModel):
+    """Request model for generating quizzes"""
+    start_page: int
+    end_page: int
+    topic: str
+    type: str = "quiz"
+    section_title: Optional[str] = None
+    subsection_title: Optional[str] = None
+    regenerate: bool = False

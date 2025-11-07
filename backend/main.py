@@ -1,64 +1,73 @@
-from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from contextlib import asynccontextmanager
-import os
+"""
+BookX Backend API
+FastAPI application for PDF management with AI analysis
+"""
+
+# Standard library imports
 import json
 import logging
-from dotenv import load_dotenv
-from pydantic import BaseModel
+import os
+from contextlib import asynccontextmanager
 from typing import List
 
-from database import get_database
-from auth import auth_router
-from pdfs import pdf_router
-from content_service import content_service
-from explain_websocket_service import explain_websocket_service
-from notes_service import notes_service
-from flashcard_service import flashcard_service
-from quiz_service import quiz_service
-from models import NoteResponse, NotesBySectionResponse, FlashcardSetResponse, QuizResponse, QuizAttemptResponse
+# Third-party imports
 from bson import ObjectId
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.middleware.cors import CORSMiddleware
 
+# Local imports
+from auth import auth_router
+from content_service import content_service
+from database import get_database
+from explain_websocket_service import explain_websocket_service
+from flashcard_service import flashcard_service
+from models import (
+    ContentRequest,
+    FlashcardRequest,
+    FlashcardSetResponse,
+    NoteResponse,
+    NotesBySectionResponse,
+    QuizAttemptResponse,
+    QuizRequest,
+    QuizResponse,
+)
+from notes_service import notes_service
+from pdfs import pdf_router
+from quiz_service import quiz_service
+
+# Load environment variables
 load_dotenv()
 
-# Setup logging
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 logger = logging.getLogger(__name__)
-
-# Request models
-class ContentRequest(BaseModel):
-    start_page: int
-    end_page: int
-    topic: str
-    type: str  # 'read' or 'explain'
-    section_title: str = ""  # Optional section title
-    subsection_title: str = ""  # Optional subsection title
-
-class FlashcardRequest(BaseModel):
-    start_page: int
-    end_page: int
-    topic: str
-    type: str = "flashcards"  # Always 'flashcards'
-    section_title: str = ""  # Optional section title
-    subsection_title: str = ""  # Optional subsection title
-    regenerate: bool = False  # Whether to regenerate existing flashcards
-
-class QuizRequest(BaseModel):
-    start_page: int
-    end_page: int
-    topic: str
-    type: str = "quiz"  # Always 'quiz'
-    section_title: str = ""  # Optional section title
-    subsection_title: str = ""  # Optional subsection title
-    regenerate: bool = False  # Whether to regenerate existing quiz
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan manager for startup and shutdown tasks"""
     # Startup
-    print("Starting up...")
+    logger.info("Starting BookX API server...")
+    try:
+        # Test database connection by getting database and pinging
+        db = await get_database()
+        # Use the database's client to ping
+        from database import client as db_client
+        if db_client:
+            await db_client.admin.command('ping')
+            logger.info("Database connection established successfully")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        raise
+    
     yield
+    
     # Shutdown
-    print("Shutting down...")
+    logger.info("Shutting down BookX API server...")
 
 app = FastAPI(
     title="BookX API",
@@ -90,8 +99,21 @@ async def health_check():
 
 @app.post("/pdfs/{pdf_id}/content")
 async def generate_content(pdf_id: str, request: ContentRequest):
-    """Generate content (read or explain) for specific PDF pages"""
+    """
+    Generate content (read or explain) for specific PDF pages.
+    
+    Args:
+        pdf_id: The ID of the PDF document
+        request: ContentRequest with page range, topic, and content type
+        
+    Returns:
+        Generated content with optional note information
+    """
     try:
+        # Validate PDF ID format
+        if not ObjectId.is_valid(pdf_id):
+            raise HTTPException(status_code=400, detail="Invalid PDF ID format")
+        
         # Get PDF details from database
         db = await get_database()
         pdf_collection = db["pdfs"]
@@ -99,6 +121,8 @@ async def generate_content(pdf_id: str, request: ContentRequest):
         
         if not pdf_doc:
             raise HTTPException(status_code=404, detail="PDF not found")
+        
+        logger.info(f"Generating {request.type} content for PDF {pdf_id}, pages {request.start_page}-{request.end_page}")
         
         # Generate content using the content service
         result = await content_service.generate_content(
@@ -111,6 +135,7 @@ async def generate_content(pdf_id: str, request: ContentRequest):
         )
         
         if "error" in result:
+            logger.error(f"Content generation error: {result['error']}")
             raise HTTPException(status_code=500, detail=result["error"])
         
         # If it's a "read" type, save it to notes
@@ -136,7 +161,7 @@ async def generate_content(pdf_id: str, request: ContentRequest):
                     content_type="read",
                     reading_content=reading_content,
                     text_content=result["content"],
-                    audio_url=None,  # No audio for read content
+                    audio_url=None,
                     audio_size=None,
                     important_points=[],
                     short_notes="",
@@ -151,7 +176,7 @@ async def generate_content(pdf_id: str, request: ContentRequest):
                 result["saved_to_notes"] = True
                 
             except Exception as e:
-                logger.error(f"Error saving read content to notes: {e}")
+                logger.error(f"Error saving read content to notes: {e}", exc_info=True)
                 # Don't fail the request if note saving fails
                 result["note_save_error"] = str(e)
         
@@ -160,15 +185,21 @@ async def generate_content(pdf_id: str, request: ContentRequest):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Content generation failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
 
 @app.get("/pdfs/{pdf_id}/notes", response_model=List[NoteResponse])
 async def get_pdf_notes(pdf_id: str, user_id: str = "default_user"):
     """Get all notes for a specific PDF"""
     try:
+        if not ObjectId.is_valid(pdf_id):
+            raise HTTPException(status_code=400, detail="Invalid PDF ID format")
         notes = await notes_service.get_notes_by_pdf(pdf_id, user_id)
         return notes
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Failed to get notes: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get notes: {str(e)}")
 
 @app.get("/pdfs/{pdf_id}/notes/sections", response_model=List[NotesBySectionResponse])
@@ -216,8 +247,10 @@ async def delete_note(note_id: str, user_id: str = "default_user"):
 async def generate_flashcards(pdf_id: str, request: FlashcardRequest):
     """Generate flashcards for specific PDF pages"""
     try:
-        # Debug logging
-        logger.info(f"Flashcard request received: {request.dict()}")
+        if not ObjectId.is_valid(pdf_id):
+            raise HTTPException(status_code=400, detail="Invalid PDF ID format")
+        
+        logger.info(f"Flashcard request received for PDF {pdf_id}: pages {request.start_page}-{request.end_page}")
         
         # Get PDF details from database
         db = await get_database()
@@ -234,13 +267,14 @@ async def generate_flashcards(pdf_id: str, request: FlashcardRequest):
             start_page=request.start_page,
             end_page=request.end_page,
             topic=request.topic,
-            section_title=request.section_title,
-            subsection_title=request.subsection_title,
+            section_title=request.section_title or "",
+            subsection_title=request.subsection_title or "",
             user_id="default_user",
-            regenerate=getattr(request, 'regenerate', False)
+            regenerate=request.regenerate
         )
         
         if "error" in result:
+            logger.error(f"Flashcard generation error: {result['error']}")
             raise HTTPException(status_code=500, detail=result["error"])
         
         return result
@@ -248,7 +282,7 @@ async def generate_flashcards(pdf_id: str, request: FlashcardRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Flashcard generation error: {str(e)}")
+        logger.error(f"Flashcard generation error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Flashcard generation failed: {str(e)}")
 
 @app.get("/pdfs/{pdf_id}/flashcards", response_model=List[FlashcardSetResponse])
@@ -291,6 +325,11 @@ async def delete_flashcard_set(flashcard_id: str, user_id: str = "default_user")
 async def generate_quiz(pdf_id: str, request: QuizRequest):
     """Generate quiz for specific PDF pages"""
     try:
+        if not ObjectId.is_valid(pdf_id):
+            raise HTTPException(status_code=400, detail="Invalid PDF ID format")
+        
+        logger.info(f"Quiz request received for PDF {pdf_id}: pages {request.start_page}-{request.end_page}")
+        
         # Get PDF details from database
         db = await get_database()
         pdf_collection = db["pdfs"]
@@ -306,13 +345,14 @@ async def generate_quiz(pdf_id: str, request: QuizRequest):
             start_page=request.start_page,
             end_page=request.end_page,
             topic=request.topic,
-            section_title=request.section_title,
-            subsection_title=request.subsection_title,
+            section_title=request.section_title or "",
+            subsection_title=request.subsection_title or "",
             user_id="default_user",
-            regenerate=getattr(request, 'regenerate', False)
+            regenerate=request.regenerate
         )
         
         if "error" in result:
+            logger.error(f"Quiz generation error: {result['error']}")
             raise HTTPException(status_code=500, detail=result["error"])
         
         return result
@@ -320,6 +360,7 @@ async def generate_quiz(pdf_id: str, request: QuizRequest):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Quiz generation failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Quiz generation failed: {str(e)}")
 
 @app.get("/pdfs/{pdf_id}/quizzes", response_model=List[QuizResponse])
@@ -395,7 +436,7 @@ async def delete_quiz(quiz_id: str, user_id: str = "default_user"):
 @app.websocket("/ws/explain/{pdf_id}")
 async def websocket_explain_mode(websocket: WebSocket, pdf_id: str):
     """WebSocket endpoint for interactive explain mode"""
-    print(f"WebSocket explain connection established for PDF: {pdf_id}")
+    logger.info(f"WebSocket explain connection established for PDF: {pdf_id}")
     await explain_websocket_service.connect(websocket, pdf_id, "default_user")
     
     try:
@@ -403,18 +444,18 @@ async def websocket_explain_mode(websocket: WebSocket, pdf_id: str):
         while True:
             try:
                 data = await websocket.receive()
-                print(f"Received WebSocket explain data: {data['type']}")
+                logger.debug(f"Received WebSocket explain data: {data['type']}")
                 
                 if data["type"] == "websocket.receive":
                     if "bytes" in data:
                         # Handle binary audio data
                         audio_data = data["bytes"]
-                        print(f"Processing audio data: {len(audio_data)} bytes")
+                        logger.debug(f"Processing audio data: {len(audio_data)} bytes")
                         await explain_websocket_service.process_audio_input(pdf_id, audio_data)
                     elif "text" in data:
                         # Handle text messages
                         message_data = json.loads(data["text"])
-                        print(f"Processing text message: {message_data}")
+                        logger.debug(f"Processing text message: {message_data.get('type')}")
                         
                         if message_data.get("type") == "start_explanation":
                             content = message_data.get("content", "")
@@ -424,7 +465,7 @@ async def websocket_explain_mode(websocket: WebSocket, pdf_id: str):
                             start_page = message_data.get("start_page", 0)
                             end_page = message_data.get("end_page", 0)
                             user_id = message_data.get("user_id", "default_user")
-                            reading_content = message_data.get("reading_content", content)  # Use reading_content if provided, otherwise use content
+                            reading_content = message_data.get("reading_content", content)
                             await explain_websocket_service.start_explanation(
                                 pdf_id, content, topic, section_title, subsection_title, start_page, end_page, reading_content
                             )
@@ -435,26 +476,27 @@ async def websocket_explain_mode(websocket: WebSocket, pdf_id: str):
                         elif message_data.get("type") == "stop_explanation":
                             await explain_websocket_service.stop_explanation(pdf_id)
                         elif message_data.get("type") == "sentence_complete":
-                            # Handle sentence completion from frontend
                             await explain_websocket_service.handle_sentence_complete(pdf_id)
                             
             except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for PDF: {pdf_id}")
                 break
             except Exception as e:
-                print(f"WebSocket explain error: {e}")
+                logger.error(f"WebSocket explain error: {e}", exc_info=True)
                 await websocket.send_json({
                     "type": "error",
                     "message": f"WebSocket error: {str(e)}"
                 })
                 
     except Exception as e:
-        print(f"WebSocket explain connection error: {e}")
+        logger.error(f"WebSocket explain connection error: {e}", exc_info=True)
         await websocket.send_json({
             "type": "error",
             "message": f"Connection error: {str(e)}"
         })
     finally:
         explain_websocket_service.disconnect(pdf_id)
+        logger.info(f"WebSocket connection closed for PDF: {pdf_id}")
 
 if __name__ == "__main__":
     import uvicorn

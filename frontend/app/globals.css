@@ -96,7 +96,7 @@ body {
   transition-duration: 150ms;
 }
 
-/* Custom animations for MicSpeakingUI */
+/* Pulse animation */
 @keyframes pulse {
   0%, 100% { 
     opacity: 1; 

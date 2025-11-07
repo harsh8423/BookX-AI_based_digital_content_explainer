@@ -2,6 +2,7 @@
 import { useState, useEffect, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { authService } from '../../../lib/auth'
+import PDFChatInterface from '../../../components/PDFChatInterface'
 
 function ReadPageContent() {
   const params = useParams()
@@ -11,6 +12,8 @@ function ReadPageContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [pdfUrl, setPdfUrl] = useState(null)
+  const [pdfImages, setPdfImages] = useState([])
+  const [useImages, setUseImages] = useState(true) // Toggle between images and PDF
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 
@@ -29,14 +32,43 @@ function ReadPageContent() {
 
   useEffect(() => {
     if (pdf && startPage && endPage) {
-      // Build PDF pages URL with authentication token
-      const token = authService.getToken()
-      const pagesUrl = `${API_BASE_URL}/pdfs/${params.id}/pages?start_page=${startPage}&end_page=${endPage}`
-      
-      // Create a blob URL for the PDF
-      fetchPDFPages(pagesUrl, token)
+      if (useImages) {
+        // Fetch PDF pages as images
+        fetchPDFPagesAsImages()
+      } else {
+        // Build PDF pages URL with authentication token
+        const token = authService.getToken()
+        const pagesUrl = `${API_BASE_URL}/pdfs/${params.id}/pages?start_page=${startPage}&end_page=${endPage}`
+        
+        // Create a blob URL for the PDF
+        fetchPDFPages(pagesUrl, token)
+      }
     }
-  }, [pdf, startPage, endPage])
+  }, [pdf, startPage, endPage, useImages])
+
+  const fetchPDFPagesAsImages = async () => {
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/pdfs/${params.id}/pages/images?start_page=${startPage}&end_page=${endPage}&zoom=2.0`,
+        {
+          headers: {
+            ...authService.getAuthHeaders(),
+          },
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch PDF pages as images')
+      }
+
+      const data = await response.json()
+      setPdfImages(data.pages || [])
+    } catch (error) {
+      console.error('Error fetching PDF pages as images:', error)
+      // Fallback to PDF view
+      setUseImages(false)
+    }
+  }
 
   const fetchPDFDetails = async () => {
     try {
@@ -188,26 +220,99 @@ function ReadPageContent() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
-          {pdfUrl ? (
-            <div className="w-full" style={{ height: 'calc(100vh - 200px)', minHeight: '600px' }}>
-              <iframe
-                src={pdfUrl}
-                className="w-full h-full border-0"
-                title={`PDF Pages ${startPage}-${endPage}`}
-                style={{ minHeight: '600px' }}
-              />
+      {/* Main Content - Split Layout */}
+      <main className="max-w-[1800px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[calc(100vh-200px)] min-h-[600px]">
+          {/* Left Side - PDF Viewer */}
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden flex flex-col">
+            {/* Toggle Button */}
+            <div className="flex justify-end p-2 border-b border-gray-200">
+              <button
+                onClick={() => setUseImages(!useImages)}
+                className="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                title={useImages ? "Switch to PDF view" : "Switch to image view"}
+              >
+                {useImages ? "📄 PDF View" : "🖼️ Image View"}
+              </button>
             </div>
-          ) : (
-            <div className="flex items-center justify-center h-96">
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-blue-500 mx-auto"></div>
-                <p className="mt-4 text-gray-600">Loading PDF pages...</p>
-              </div>
+            
+            {/* Content Area */}
+            <div className="flex-1 overflow-y-auto">
+              {useImages ? (
+                pdfImages.length > 0 ? (
+                  <div className="p-4 space-y-4">
+                    {pdfImages.map((page, index) => (
+                      <div key={index} className="bg-gray-50 rounded-lg p-2 shadow-sm">
+                        <div className="text-xs text-gray-500 mb-2 px-2">
+                          Page {page.page_number}
+                        </div>
+                        <img
+                          src={`data:image/png;base64,${page.image_base64}`}
+                          alt={`Page ${page.page_number}`}
+                          className="w-full h-auto rounded border border-gray-200"
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-blue-500 mx-auto"></div>
+                      <p className="mt-4 text-gray-600">Loading PDF pages as images...</p>
+                    </div>
+                  </div>
+                )
+              ) : (
+                pdfUrl ? (
+                  <div className="w-full h-full">
+                    <iframe
+                      src={pdfUrl}
+                      className="w-full h-full border-0"
+                      title={`PDF Pages ${startPage}-${endPage}`}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-blue-500 mx-auto"></div>
+                      <p className="mt-4 text-gray-600">Loading PDF pages...</p>
+                    </div>
+                  </div>
+                )
+              )}
             </div>
-          )}
+          </div>
+
+          {/* Right Side - Chat Interface */}
+          <div className="h-full">
+            <PDFChatInterface
+              pdfId={params.id}
+              startPage={startPage}
+              endPage={endPage}
+              onSendMessage={async (query) => {
+                const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
+                const response = await fetch(`${API_BASE_URL}/api/pdfs/${params.id}/chat`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...authService.getAuthHeaders(),
+                  },
+                  body: JSON.stringify({
+                    query: query,
+                    start_page: startPage,
+                    end_page: endPage
+                  }),
+                })
+
+                if (!response.ok) {
+                  throw new Error('Failed to get answer')
+                }
+
+                return await response.json()
+              }}
+            />
+          </div>
         </div>
       </main>
     </div>

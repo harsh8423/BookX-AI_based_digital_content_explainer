@@ -1,8 +1,8 @@
 'use client'
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
-import { authService } from '../../../../lib/auth'
-import ReadingExplanation from '../../../../components/ReadingExplanation'
+import { authService } from '../../../lib/auth'
+import ReadingExplanation from '../../../components/ReadingExplanation'
 
 function ExplainPageContent() {
   const params = useParams()
@@ -13,6 +13,7 @@ function ExplainPageContent() {
   const [error, setError] = useState(null)
   const [generatedContent, setGeneratedContent] = useState(null)
   const [isGenerating, setIsGenerating] = useState(false)
+  const generatingRef = useRef(false)
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 
@@ -34,6 +35,77 @@ function ExplainPageContent() {
       generateContent()
     }
   }, [pdf, startPage, endPage, topic])
+
+  // Fetch PDF pages URL for display
+  const [pdfUrl, setPdfUrl] = useState(null)
+  const [pdfImages, setPdfImages] = useState([])
+  const [useImages, setUseImages] = useState(true) // Toggle between images and PDF
+  
+  useEffect(() => {
+    if (pdf && startPage && endPage) {
+      if (useImages) {
+        // Fetch PDF pages as images
+        fetchPDFPagesAsImages()
+      } else {
+        const token = authService.getToken()
+        const pagesUrl = `${API_BASE_URL}/pdfs/${params.id}/pages?start_page=${startPage}&end_page=${endPage}`
+        fetchPDFPages(pagesUrl, token)
+      }
+    }
+  }, [pdf, startPage, endPage, useImages])
+
+  const fetchPDFPagesAsImages = async () => {
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/pdfs/${params.id}/pages/images?start_page=${startPage}&end_page=${endPage}&zoom=2.0`,
+        {
+          headers: {
+            ...authService.getAuthHeaders(),
+          },
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch PDF pages as images')
+      }
+
+      const data = await response.json()
+      setPdfImages(data.pages || [])
+    } catch (error) {
+      console.error('Error fetching PDF pages as images:', error)
+      // Fallback to PDF view
+      setUseImages(false)
+    }
+  }
+
+  const fetchPDFPages = async (url, token) => {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch PDF pages')
+      }
+
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      setPdfUrl(blobUrl)
+    } catch (error) {
+      console.error('Error fetching PDF pages:', error)
+    }
+  }
+
+  // Cleanup blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl)
+      }
+    }
+  }, [pdfUrl])
 
   const fetchPDFDetails = async () => {
     try {
@@ -70,11 +142,18 @@ function ExplainPageContent() {
   }
 
   const generateContent = async () => {
+    // Prevent duplicate requests
+    if (generatingRef.current) {
+      return
+    }
+    
     try {
+      generatingRef.current = true
       setIsGenerating(true)
       setGeneratedContent(null)
 
-      const response = await fetch(`${API_BASE_URL}/pdfs/${params.id}/content`, {
+      // Use new explanation endpoint
+      const response = await fetch(`${API_BASE_URL}/api/pdfs/${params.id}/explain`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -84,23 +163,29 @@ function ExplainPageContent() {
           start_page: startPage,
           end_page: endPage,
           topic: topic,
-          type: 'explain',
           section_title: sectionTitle || null,
           subsection_title: subsectionTitle || null
         }),
       })
 
       if (!response.ok) {
-        throw new Error('Failed to generate content')
+        throw new Error('Failed to generate explanation')
       }
 
       const data = await response.json()
-      setGeneratedContent(data)
+      // data contains: text_content, audio_url, topic, start_page, end_page, cached
+      setGeneratedContent({
+        content: data.text_content,
+        audio_url: data.audio_url,
+        topic: data.topic,
+        cached: data.cached
+      })
     } catch (error) {
-      console.error('Error generating content:', error)
+      console.error('Error generating explanation:', error)
       setError(error.message)
     } finally {
       setIsGenerating(false)
+      generatingRef.current = false
     }
   }
 
@@ -172,15 +257,85 @@ function ExplainPageContent() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white/60 backdrop-blur-lg rounded-2xl shadow-xl border border-gray-100 min-h-[500px] p-6">
-          <ReadingExplanation
-            generatedContent={generatedContent}
-            contentType="explain"
-            isGenerating={isGenerating}
-            topic={topic}
-          />
+      {/* Main Content - Split Layout */}
+      <main className="max-w-[1800px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-[600px]">
+          {/* Left Side - PDF Viewer */}
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden flex flex-col">
+            {/* Toggle Button */}
+            <div className="flex justify-end p-2 border-b border-gray-200">
+              <button
+                onClick={() => setUseImages(!useImages)}
+                className="px-3 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                title={useImages ? "Switch to PDF view" : "Switch to image view"}
+              >
+                {useImages ? "📄 PDF View" : "🖼️ Image View"}
+              </button>
+            </div>
+            
+            {/* Content Area */}
+            <div className="flex-1 overflow-y-auto" style={{ height: 'calc(100vh - 250px)', minHeight: '600px' }}>
+              {useImages ? (
+                pdfImages.length > 0 ? (
+                  <div className="p-4 space-y-4">
+                    {pdfImages.map((page, index) => (
+                      <div key={index} className="bg-gray-50 rounded-lg p-2 shadow-sm">
+                        <div className="text-xs text-gray-500 mb-2 px-2">
+                          Page {page.page_number}
+                        </div>
+                        <img
+                          src={`data:image/png;base64,${page.image_base64}`}
+                          alt={`Page ${page.page_number}`}
+                          className="w-full h-auto rounded border border-gray-200"
+                          loading="lazy"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-green-500 mx-auto"></div>
+                      <p className="mt-4 text-gray-600">Loading PDF pages as images...</p>
+                    </div>
+                  </div>
+                )
+              ) : (
+                pdfUrl ? (
+                  <div className="w-full h-full">
+                    <iframe
+                      src={pdfUrl}
+                      className="w-full h-full border-0"
+                      title={`PDF Pages ${startPage}-${endPage}`}
+                      style={{ minHeight: '600px' }}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-green-500 mx-auto"></div>
+                      <p className="mt-4 text-gray-600">Loading PDF pages...</p>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+
+          {/* Right Side - Explanation Content */}
+          <div className="bg-white/60 backdrop-blur-lg rounded-2xl shadow-xl border border-gray-100 min-h-[500px] p-6">
+            <ReadingExplanation
+              generatedContent={generatedContent}
+              contentType="explain"
+              isGenerating={isGenerating}
+              topic={topic}
+              pdfId={params.id}
+              startPage={startPage}
+              endPage={endPage}
+              sectionTitle={sectionTitle}
+              subsectionTitle={subsectionTitle}
+            />
+          </div>
         </div>
       </main>
     </div>

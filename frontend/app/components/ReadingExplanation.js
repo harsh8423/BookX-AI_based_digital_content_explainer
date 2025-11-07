@@ -29,7 +29,6 @@ export default function ReadingExplanation({
   const [isStreamingAudio, setIsStreamingAudio] = useState(false)
   const [audioChunks, setAudioChunks] = useState([])
   const [isPlayingAudio, setIsPlayingAudio] = useState(false)
-  const [existingNote, setExistingNote] = useState(null)
 
   // WebSocket refs
   const wsRef = useRef(null)
@@ -51,13 +50,6 @@ export default function ReadingExplanation({
     }
   }, [generatedContent, contentType])
 
-  // Show success message for read content saved to notes
-  useEffect(() => {
-    if (generatedContent?.saved_to_notes && contentType === 'read') {
-      console.log('Content saved to notes successfully!')
-      // You can add a toast notification here if you have one
-    }
-  }, [generatedContent, contentType])
 
   // Handle playing existing audio from notes
   useEffect(() => {
@@ -153,9 +145,6 @@ export default function ReadingExplanation({
           }
           console.log('Converted audio chunk to Uint8Array, size:', audioArray.length)
           setAudioChunks(prev => [...prev, audioArray])
-        } else if (msg.type === "existing_note_found") {
-          setExistingNote(msg.note)
-          setLogs(prev => [`[Resuming existing note] ${msg.note.topic}`, ...prev])
         } else if (msg.type === "explanation_complete") {
           setIsPlaying(false)
           setIsStreamingAudio(false)
@@ -849,21 +838,6 @@ export default function ReadingExplanation({
                   </div>
                 </div>
 
-                {/* Existing Note Info */}
-                {existingNote && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span className="text-sm font-medium text-blue-700">Resuming Previous Note</span>
-                    </div>
-                    <p className="text-sm text-blue-600">
-                      Found existing explanation for "{existingNote.topic}" - playing saved audio
-                    </p>
-                  </div>
-                )}
-
                 {/* Audio Controls */}
                 <div className="flex items-center justify-center space-x-4">
                   <button
@@ -912,21 +886,6 @@ export default function ReadingExplanation({
                   {isPlaying && <span className="text-sm text-gray-600 ml-2">(Playing...)</span>}
                 </h3>
               </div>
-
-              {/* Success Message for Notes */}
-              {generatedContent?.saved_to_notes && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center space-x-2">
-                    <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <span className="text-sm font-medium text-green-700">Content Saved to Notes</span>
-                  </div>
-                  <p className="text-sm text-green-600 mt-1">
-                    This content has been automatically saved to your notes and will appear in the Notes tab.
-                  </p>
-                </div>
-              )}
 
               {/* Content Sentences */}
               {sentences.length > 0 ? (

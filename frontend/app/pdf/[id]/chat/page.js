@@ -3,13 +3,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { authService } from '../../../lib/auth'
 import IndexContent from '../../../components/IndexContent'
-import ReadingExplanation from '../../../components/ReadingExplanation'
 import AboutDocument from '../../../components/AboutDocument'
-import NotesTab from '../../../components/NotesTab'
-import FlashcardComponent from '../../../components/FlashcardComponent'
-import QuizComponent from '../../../components/QuizComponent'
-import FlashcardListComponent from '../../../components/FlashcardListComponent'
-import QuizListComponent from '../../../components/QuizListComponent'
 
 export default function PDFChatPage() {
   const params = useParams()
@@ -18,18 +12,6 @@ export default function PDFChatPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState('index-content')
-  
-  // Content state
-  const [generatedContent, setGeneratedContent] = useState(null)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [contentType, setContentType] = useState(null) // 'read' or 'explain'
-  const [currentTopic, setCurrentTopic] = useState('')
-  
-  // Flashcard and Quiz state
-  const [selectedSection, setSelectedSection] = useState(null)
-  const [isGeneratingContent, setIsGeneratingContent] = useState(false)
-  const [generatingType, setGeneratingType] = useState(null) // 'flashcard' or 'quiz'
-  const [generatedStudyMaterial, setGeneratedStudyMaterial] = useState(null) // Store generated flashcard/quiz
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 
@@ -73,123 +55,6 @@ export default function PDFChatPage() {
     }
   }
 
-  const handleContentRequest = async (request) => {
-    try {
-      setIsGenerating(true)
-      setContentType(request.type)
-      setGeneratedContent(null)
-
-      const response = await fetch(`${API_BASE_URL}/pdfs/${params.id}/content`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...authService.getAuthHeaders(),
-        },
-        body: JSON.stringify(request),
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to generate content')
-      }
-
-      const data = await response.json()
-      setGeneratedContent(data)
-      setCurrentTopic(request.topic)
-      
-      // Switch to reading-explanation tab to show the content
-      setActiveTab('reading-explanation')
-      
-    } catch (error) {
-      console.error('Error generating content:', error)
-      setError(error.message)
-    } finally {
-      setIsGenerating(false)
-    }
-  }
-
-  const handlePlayNote = (note) => {
-    // Set the note content as generated content and switch to reading-explanation tab
-    setGeneratedContent({
-      content: note.text_content,
-      audio_url: note.audio_url
-    })
-    setContentType('explain')
-    setCurrentTopic(note.topic)
-    setActiveTab('reading-explanation')
-  }
-
-  const generateStudyMaterial = async (section) => {
-    const endpoint = section.action === 'flashcard' ? 'flashcards' : 'quizzes'
-    
-    const response = await fetch(`${API_BASE_URL}/pdfs/${params.id}/${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authService.getAuthHeaders(),
-      },
-      body: JSON.stringify({
-        start_page: parseInt(section.start_pdf_page) || 1,
-        end_page: parseInt(section.end_pdf_page) || parseInt(section.start_pdf_page) || 1,
-        topic: section.section_title || 'General Topic',
-        type: section.action,
-        section_title: section.section_title || '',
-        subsection_title: section.subsection_title || '',
-        regenerate: false
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`Failed to generate ${section.action}`)
-    }
-
-    const data = await response.json()
-    
-    if (data.success) {
-      return section.action === 'flashcard' ? data.flashcards : data.quiz
-    } else {
-      throw new Error(data.error || `Failed to generate ${section.action}`)
-    }
-  }
-
-  const handleSectionSelect = async (section) => {
-    // Clear any existing selected section first
-    setSelectedSection(null)
-    setGeneratedStudyMaterial(null)
-    
-    // Set the new section
-    setSelectedSection(section)
-    
-    // If it's flashcard or quiz, generate content first before switching tabs
-    if (section.action === 'flashcard' || section.action === 'quiz') {
-      setIsGeneratingContent(true)
-      setGeneratingType(section.action)
-      
-      try {
-        const generatedMaterial = await generateStudyMaterial(section)
-        setGeneratedStudyMaterial(generatedMaterial)
-        
-        // Only switch to the tab after generation is complete
-        if (section.action === 'flashcard') {
-          setActiveTab('flashcards')
-        } else if (section.action === 'quiz') {
-          setActiveTab('quiz')
-        }
-      } catch (error) {
-        console.error('Error generating study material:', error)
-        // Still switch to the tab to show error state
-        if (section.action === 'flashcard') {
-          setActiveTab('flashcards')
-        } else if (section.action === 'quiz') {
-          setActiveTab('quiz')
-        }
-      } finally {
-        setIsGeneratingContent(false)
-      }
-    } else {
-      // For other actions, switch to reading explanation immediately
-      setActiveTab('reading-explanation')
-    }
-  }
 
   if (isLoading) {
     return (
@@ -227,29 +92,6 @@ export default function PDFChatPage() {
             </svg>
             Back to PDF
           </button>
-        </div>
-      </div>
-    )
-  }
-
-  // Show generation loading state
-  if (isGeneratingContent) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="relative">
-            <div className="animate-spin rounded-full h-20 w-20 border-4 border-gray-200 border-t-blue-500"></div>
-            <div className="absolute inset-0 animate-pulse rounded-full h-20 w-20 border-4 border-transparent border-t-blue-200"></div>
-          </div>
-          <h2 className="mt-6 text-2xl font-bold text-gray-900">
-            Generating {generatingType === 'flashcard' ? 'Flashcards' : 'Quiz'}...
-          </h2>
-          <p className="mt-2 text-gray-600">
-            Extracting content from pages {selectedSection?.start_pdf_page || 1}-{selectedSection?.end_pdf_page || selectedSection?.start_pdf_page || 1} and generating {generatingType === 'flashcard' ? 'study cards' : 'quiz questions'}
-          </p>
-          <div className="mt-4 text-sm text-gray-500">
-            Topic: {selectedSection?.section_title || 'General Topic'}
-          </div>
         </div>
       </div>
     )
@@ -304,12 +146,6 @@ export default function PDFChatPage() {
               </h1>
             </div>
             <div className="flex items-center space-x-4">
-              {isGenerating && (
-                <div className="inline-flex items-center px-6 py-2 bg-blue-100 text-blue-700 rounded-lg">
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
-                  Generating content...
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -324,10 +160,6 @@ export default function PDFChatPage() {
             <div className="flex space-x-1">
               {[
                 { id: 'index-content', label: 'Index Content', icon: '📋' },
-                { id: 'reading-explanation', label: 'Content View', icon: '📖' },
-                { id: 'notes', label: 'Notes', icon: '📝' },
-                { id: 'flashcards', label: 'Flashcards', icon: '🎴' },
-                { id: 'quiz', label: 'Quiz', icon: '🧠' },
                 { id: 'about-document', label: 'About Document', icon: '📄' }
               ].map((tab) => (
                 <button
@@ -349,43 +181,7 @@ export default function PDFChatPage() {
           {/* Tab Content */}
           <div className="flex-1 overflow-hidden">
             {activeTab === 'index-content' && (
-              <IndexContent 
-                pdf={pdf} 
-                onContentRequest={handleContentRequest}
-                onSectionSelect={handleSectionSelect}
-              />
-            )}
-            {activeTab === 'reading-explanation' && (
-              <ReadingExplanation
-                generatedContent={generatedContent}
-                contentType={contentType}
-                isGenerating={isGenerating}
-                topic={currentTopic}
-              />
-            )}
-            {activeTab === 'notes' && (
-              <NotesTab 
-                pdf={pdf} 
-                onPlayNote={handlePlayNote}
-              />
-            )}
-            {activeTab === 'flashcards' && (
-              <div className="h-full overflow-y-auto p-6">
-                <FlashcardListComponent 
-                  pdfId={params.id} 
-                  selectedSection={selectedSection} 
-                  generatedMaterial={generatedStudyMaterial}
-                />
-              </div>
-            )}
-            {activeTab === 'quiz' && (
-              <div className="h-full overflow-y-auto p-6">
-                <QuizListComponent 
-                  pdfId={params.id} 
-                  selectedSection={selectedSection} 
-                  generatedMaterial={generatedStudyMaterial}
-                />
-              </div>
+              <IndexContent pdf={pdf} />
             )}
             {activeTab === 'about-document' && <AboutDocument pdf={pdf} />}
           </div>

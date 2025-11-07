@@ -28,9 +28,9 @@ class QuizService:
                     "error": f"Invalid page range. PDF has {len(pdf_doc)} pages."
                 }
             
-            # If regenerating, delete existing quizzes for this section
-            if regenerate:
-                await self._delete_existing_quizzes(pdf_id, user_id, section_title, subsection_title)
+            # Regenerate flag is ignored since we're not saving to database
+            # if regenerate:
+            #     await self._delete_existing_quizzes(pdf_id, user_id, section_title, subsection_title)
             
             # Extract specific pages as a new PDF
             extracted_pdf_bytes = content_service._extract_pages_as_pdf(pdf_doc, start_page, end_page)
@@ -41,24 +41,19 @@ class QuizService:
             if "error" in quiz_data:
                 return quiz_data
             
-            # Create quiz
-            quiz = QuizCreate(
-                pdf_id=pdf_id,
-                topic=topic,
-                section_title=section_title,
-                subsection_title=subsection_title,
-                start_page=start_page,
-                end_page=end_page,
-                questions=quiz_data["questions"],
-                created_by_user=user_id
-            )
-            
-            # Save to database
-            saved_quiz = await self.create_quiz(quiz)
-            
+            # Return quiz directly without saving to database
             return {
                 "success": True,
-                "quiz": saved_quiz,
+                "quiz": {
+                    "pdf_id": pdf_id,
+                    "topic": topic,
+                    "section_title": section_title,
+                    "subsection_title": subsection_title,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "questions": quiz_data["questions"],
+                    "created_by_user": user_id
+                },
                 "total_questions": len(quiz_data["questions"])
             }
             
@@ -218,20 +213,10 @@ Focus on key concepts from the PDF. Keep explanations concise but educational.""
             raise
     
     async def get_quizzes_by_pdf(self, pdf_id: str, user_id: str) -> List[QuizResponse]:
-        """Get all quizzes for a specific PDF and user"""
+        """Get all quizzes for a specific PDF and user (returns empty list since quizzes are not saved)"""
         try:
-            quizzes_collection = await get_quizzes_collection()
-            
-            cursor = quizzes_collection.find({
-                "pdf_id": pdf_id,
-                "created_by_user": user_id
-            }).sort("created_at", -1)
-            
-            quizzes = []
-            async for quiz in cursor:
-                quizzes.append(self._convert_to_response(quiz))
-            
-            return quizzes
+            # Return empty list since we're not saving quizzes to database
+            return []
             
         except Exception as e:
             logger.error(f"Error getting quizzes by PDF: {e}")
@@ -257,51 +242,34 @@ Focus on key concepts from the PDF. Keep explanations concise but educational.""
             raise
     
     async def submit_quiz_attempt(self, quiz_id: str, user_id: str, results: List[QuizResult], completion_time: float) -> QuizAttemptResponse:
-        """Submit a quiz attempt and save results"""
+        """Submit a quiz attempt without saving to database"""
         try:
-            quiz_attempts_collection = await get_quiz_attempts_collection()
-            
             # Calculate total score
             total_score = sum(1 for result in results if result.is_correct)
             total_questions = len(results)
             
-            # Create quiz attempt
-            quiz_attempt = QuizAttempt(
+            # Return attempt response without saving to database
+            from datetime import datetime
+            return QuizAttemptResponse(
+                id="",  # No database ID since we're not saving
                 quiz_id=quiz_id,
                 user_id=user_id,
                 results=results,
                 total_score=total_score,
                 total_questions=total_questions,
-                completion_time=completion_time
+                completion_time=completion_time,
+                created_at=datetime.utcnow()
             )
-            
-            # Insert into database
-            result = await quiz_attempts_collection.insert_one(quiz_attempt.dict(by_alias=True))
-            
-            # Fetch the created attempt
-            created_attempt = await quiz_attempts_collection.find_one({"_id": result.inserted_id})
-            
-            return self._convert_attempt_to_response(created_attempt)
             
         except Exception as e:
             logger.error(f"Error submitting quiz attempt: {e}")
             raise
     
     async def get_quiz_attempts(self, quiz_id: str, user_id: str) -> List[QuizAttemptResponse]:
-        """Get all quiz attempts for a specific quiz and user"""
+        """Get all quiz attempts for a specific quiz and user (returns empty list since attempts are not saved)"""
         try:
-            quiz_attempts_collection = await get_quiz_attempts_collection()
-            
-            cursor = quiz_attempts_collection.find({
-                "quiz_id": quiz_id,
-                "user_id": user_id
-            }).sort("created_at", -1)
-            
-            attempts = []
-            async for attempt in cursor:
-                attempts.append(self._convert_attempt_to_response(attempt))
-            
-            return attempts
+            # Return empty list since we're not saving attempts to database
+            return []
             
         except Exception as e:
             logger.error(f"Error getting quiz attempts: {e}")

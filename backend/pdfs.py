@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response, Query
+from fastapi.responses import StreamingResponse
 from typing import List
 from datetime import datetime
 import os
 import asyncio
 from dotenv import load_dotenv
+import io
 
 from models import PDF, PDFCreate, PDFUploadRequest, PDFUploadResponse, PDFMetadata, PDFResponse, PDFIndexContent
 from database import get_pdfs_collection
 from auth import get_current_user, User
 from gemini_service import gemini_service
+from content_service import content_service
 
 load_dotenv()
 
@@ -154,6 +157,60 @@ async def get_user_pdfs(current_user: User = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch PDFs: {str(e)}"
+        )
+
+@pdf_router.get("/{pdf_id}/pages", response_class=Response)
+async def get_pdf_pages(
+    pdf_id: str,
+    start_page: int = Query(..., ge=1, description="Starting page number (1-indexed)"),
+    end_page: int = Query(..., ge=1, description="Ending page number (1-indexed)"),
+    current_user: User = Depends(get_current_user)
+):
+    """Extract and return specific PDF pages as a PDF file"""
+    try:
+        from bson import ObjectId
+        
+        # Get PDF document
+        pdfs_collection = await get_pdfs_collection()
+        pdf_doc = await pdfs_collection.find_one({
+            "_id": ObjectId(pdf_id),
+            "user_id": str(current_user.id)
+        })
+        
+        if not pdf_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF not found"
+            )
+        
+        # Load PDF and extract pages
+        pdf_doc_obj = await content_service.load_pdf(pdf_id, pdf_doc['cloudinary_url'])
+        
+        # Validate page range
+        if start_page < 1 or end_page > len(pdf_doc_obj) or start_page > end_page:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid page range. PDF has {len(pdf_doc_obj)} pages."
+            )
+        
+        # Extract pages as PDF bytes
+        extracted_pdf_bytes = content_service._extract_pages_as_pdf(pdf_doc_obj, start_page, end_page)
+        
+        # Return as PDF file
+        return Response(
+            content=extracted_pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename=pages_{start_page}_{end_page}.pdf"
+            }
+        )
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extract PDF pages: {str(e)}"
         )
 
 @pdf_router.get("/{pdf_id}", response_model=PDFResponse)

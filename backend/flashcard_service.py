@@ -28,9 +28,9 @@ class FlashcardService:
                     "error": f"Invalid page range. PDF has {len(pdf_doc)} pages."
                 }
             
-            # If regenerating, delete existing flashcards for this section
-            if regenerate:
-                await self._delete_existing_flashcards(pdf_id, user_id, section_title, subsection_title)
+            # Regenerate flag is ignored since we're not saving to database
+            # if regenerate:
+            #     await self._delete_existing_flashcards(pdf_id, user_id, section_title, subsection_title)
             
             # Extract specific pages as a new PDF
             extracted_pdf_bytes = content_service._extract_pages_as_pdf(pdf_doc, start_page, end_page)
@@ -41,24 +41,19 @@ class FlashcardService:
             if "error" in flashcards_data:
                 return flashcards_data
             
-            # Create flashcard set
-            flashcard_set = FlashcardSetCreate(
-                pdf_id=pdf_id,
-                topic=topic,
-                section_title=section_title,
-                subsection_title=subsection_title,
-                start_page=start_page,
-                end_page=end_page,
-                flashcards=flashcards_data["flashcards"],
-                created_by_user=user_id
-            )
-            
-            # Save to database
-            saved_flashcards = await self.create_flashcard_set(flashcard_set)
-            
+            # Return flashcards directly without saving to database
             return {
                 "success": True,
-                "flashcards": saved_flashcards,
+                "flashcards": {
+                    "pdf_id": pdf_id,
+                    "topic": topic,
+                    "section_title": section_title,
+                    "subsection_title": subsection_title,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "flashcards": flashcards_data["flashcards"],
+                    "created_by_user": user_id
+                },
                 "total_flashcards": len(flashcards_data["flashcards"])
             }
             
@@ -200,20 +195,10 @@ CRITICAL: Return ONLY valid JSON starting with {{ and ending with }}. No other t
             raise
     
     async def get_flashcards_by_pdf(self, pdf_id: str, user_id: str) -> List[FlashcardSetResponse]:
-        """Get all flashcard sets for a specific PDF and user"""
+        """Get all flashcard sets for a specific PDF and user (returns empty list since flashcards are not saved)"""
         try:
-            flashcards_collection = await get_flashcards_collection()
-            
-            cursor = flashcards_collection.find({
-                "pdf_id": pdf_id,
-                "created_by_user": user_id
-            }).sort("created_at", -1)
-            
-            flashcards = []
-            async for flashcard_set in cursor:
-                flashcards.append(self._convert_to_response(flashcard_set))
-            
-            return flashcards
+            # Return empty list since we're not saving flashcards to database
+            return []
             
         except Exception as e:
             logger.error(f"Error getting flashcards by PDF: {e}")

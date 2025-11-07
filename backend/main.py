@@ -26,13 +26,10 @@ from models import (
     ContentRequest,
     FlashcardRequest,
     FlashcardSetResponse,
-    NoteResponse,
-    NotesBySectionResponse,
     QuizAttemptResponse,
     QuizRequest,
     QuizResponse,
 )
-from notes_service import notes_service
 from pdfs import pdf_router
 from quiz_service import quiz_service
 
@@ -138,48 +135,6 @@ async def generate_content(pdf_id: str, request: ContentRequest):
             logger.error(f"Content generation error: {result['error']}")
             raise HTTPException(status_code=500, detail=result["error"])
         
-        # If it's a "read" type, save it to notes
-        if request.type == "read" and "content" in result:
-            try:
-                from models import NoteCreate
-                
-                # Extract reading content from PDF pages for notes
-                reading_content = await content_service.extract_reading_content(
-                    pdf_id=pdf_id,
-                    cloudinary_url=pdf_doc["cloudinary_url"],
-                    start_page=request.start_page,
-                    end_page=request.end_page
-                )
-                
-                note_data = NoteCreate(
-                    pdf_id=pdf_id,
-                    topic=request.topic,
-                    section_title=request.section_title,
-                    subsection_title=request.subsection_title,
-                    start_page=request.start_page,
-                    end_page=request.end_page,
-                    content_type="read",
-                    reading_content=reading_content,
-                    text_content=result["content"],
-                    audio_url=None,
-                    audio_size=None,
-                    important_points=[],
-                    short_notes="",
-                    created_by_user="default_user"
-                )
-                
-                note = await notes_service.create_note(note_data)
-                logger.info(f"Created read note: {note.id}")
-                
-                # Add note info to result
-                result["note_id"] = str(note.id)
-                result["saved_to_notes"] = True
-                
-            except Exception as e:
-                logger.error(f"Error saving read content to notes: {e}", exc_info=True)
-                # Don't fail the request if note saving fails
-                result["note_save_error"] = str(e)
-        
         return result
         
     except HTTPException:
@@ -187,60 +142,6 @@ async def generate_content(pdf_id: str, request: ContentRequest):
     except Exception as e:
         logger.error(f"Content generation failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
-
-@app.get("/pdfs/{pdf_id}/notes", response_model=List[NoteResponse])
-async def get_pdf_notes(pdf_id: str, user_id: str = "default_user"):
-    """Get all notes for a specific PDF"""
-    try:
-        if not ObjectId.is_valid(pdf_id):
-            raise HTTPException(status_code=400, detail="Invalid PDF ID format")
-        notes = await notes_service.get_notes_by_pdf(pdf_id, user_id)
-        return notes
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get notes: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get notes: {str(e)}")
-
-@app.get("/pdfs/{pdf_id}/notes/sections", response_model=List[NotesBySectionResponse])
-async def get_notes_by_sections(pdf_id: str, user_id: str = "default_user"):
-    """Get notes grouped by sections for the notes tab"""
-    try:
-        notes = await notes_service.get_notes_grouped_by_section(pdf_id, user_id)
-        return notes
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get notes by sections: {str(e)}")
-
-@app.get("/pdfs/{pdf_id}/notes/section/{section_title}", response_model=List[NoteResponse])
-async def get_notes_by_section(pdf_id: str, section_title: str, user_id: str = "default_user", subsection_title: str = None):
-    """Get notes for a specific section"""
-    try:
-        notes = await notes_service.get_notes_by_section(pdf_id, user_id, section_title, subsection_title)
-        return notes
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get notes by section: {str(e)}")
-
-@app.get("/pdfs/{pdf_id}/notes/topic/{topic}", response_model=List[NoteResponse])
-async def get_notes_by_topic(pdf_id: str, topic: str, user_id: str = "default_user"):
-    """Get notes for a specific topic"""
-    try:
-        notes = await notes_service.get_notes_by_topic(pdf_id, user_id, topic)
-        return notes
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get notes by topic: {str(e)}")
-
-@app.delete("/notes/{note_id}")
-async def delete_note(note_id: str, user_id: str = "default_user"):
-    """Delete a specific note"""
-    try:
-        success = await notes_service.delete_note(note_id, user_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return {"message": "Note deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete note: {str(e)}")
 
 # Flashcard endpoints
 @app.post("/pdfs/{pdf_id}/flashcards")

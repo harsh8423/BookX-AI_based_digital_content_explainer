@@ -9,8 +9,6 @@ from fastapi import WebSocket, WebSocketDisconnect
 from groq import Groq
 import httpx
 from gemini_tts_service import gemini_tts_service
-from notes_service import notes_service
-from models import NoteCreate
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +40,6 @@ class ExplainSession:
         self.current_audio_chunk = 0
         self.total_audio_chunks = 0
         self.conversation_context = []
-        self.current_note = None
         self.audio_stream_task = None
         
     async def start_explanation(self, content: str, topic: str, section_title: str = "", subsection_title: str = "", start_page: int = 0, end_page: int = 0, reading_content: str = ""):
@@ -60,18 +57,6 @@ class ExplainSession:
         self.is_explaining = True
         self.is_paused = False
         self.is_streaming_audio = False
-        
-        # Check if note already exists
-        logger.info(f"ExplainSession: Checking for existing note...")
-        existing_note = await notes_service.check_existing_note(
-            self.pdf_id, self.user_id, topic, section_title, subsection_title
-        )
-        
-        if existing_note:
-            # Resume existing note
-            await self.websocket_service._send_explanation_start(self.pdf_id)
-            await self._resume_existing_note(existing_note)
-            return
         
         # Initialize conversation context
         self.conversation_context = [
@@ -94,18 +79,6 @@ Remember: You are the tutor, the student is asking questions during your explana
         
         await self.websocket_service._send_explanation_start(self.pdf_id)
         await self._process_explanation_with_audio()
-    
-    async def _resume_existing_note(self, note):
-        """Resume existing note by streaming its audio"""
-        self.current_note = note
-        await self.websocket_service._send_existing_note_found(self.pdf_id, note)
-        
-        if note.audio_url:
-            # Stream existing audio
-            await self._stream_existing_audio(note.audio_url)
-        else:
-            # Generate new audio for existing text content
-            await self._process_explanation_with_audio()
     
     async def _process_explanation_with_audio(self):
         """Process explanation with audio generation and streaming"""
@@ -137,13 +110,10 @@ Remember: You are the tutor, the student is asking questions during your explana
                 
                 # Upload to Cloudinary
                 filename = f"{self.pdf_id}_{self.topic}_{self.start_page}_{self.end_page}"
+                # Upload to Cloudinary (optional - for future use)
                 audio_result = await gemini_tts_service.generate_and_upload_explanation_audio(
                     self.current_content, self.topic, filename
                 )
-                
-                if audio_result["success"]:
-                    # Create note in database
-                    await self._create_note(audio_result["audio_url"], len(full_audio_data))
                 
                 # Send completion signal
                 await self.websocket_service._send_explanation_complete(self.pdf_id)
@@ -183,32 +153,6 @@ Remember: You are the tutor, the student is asking questions during your explana
             await self.websocket_service._send_error(self.pdf_id, f"Audio streaming error: {str(e)}")
             self.is_streaming_audio = False
             self.is_explaining = False
-    
-    async def _create_note(self, audio_url: str, audio_size: int):
-        """Create note in database"""
-        try:
-            note_data = NoteCreate(
-                pdf_id=self.pdf_id,
-                topic=self.topic,
-                section_title=self.section_title,
-                subsection_title=self.subsection_title,
-                start_page=self.start_page,
-                end_page=self.end_page,
-                content_type="explain",
-                reading_content=self.reading_content,  # The original text content that was read
-                text_content=self.current_content,  # The textual explanation
-                audio_url=audio_url,
-                audio_size=audio_size,
-                important_points=[],  # Can be extracted later
-                short_notes="",  # Can be generated later
-                created_by_user=self.user_id
-            )
-            
-            self.current_note = await notes_service.create_note(note_data)
-            logger.info(f"Created note for topic: {self.topic}")
-            
-        except Exception as e:
-            logger.error(f"Error creating note: {e}")
     
     async def _process_explanation(self):
         """Process explanation sentence by sentence"""
@@ -536,21 +480,6 @@ class ExplainWebSocketService:
             await self.active_connections[pdf_id].send_json({
                 "type": "audio_chunk",
                 "data": audio_b64
-            })
-    
-    async def _send_existing_note_found(self, pdf_id: str, note):
-        """Send existing note found signal"""
-        if pdf_id in self.active_connections:
-            await self.active_connections[pdf_id].send_json({
-                "type": "existing_note_found",
-                "note": {
-                    "id": str(note.id),
-                    "topic": note.topic,
-                    "section_title": note.section_title,
-                    "subsection_title": note.subsection_title,
-                    "audio_url": note.audio_url,
-                    "created_at": note.created_at.isoformat()
-                }
             })
     
     async def _send_tutor_audio_start(self, pdf_id: str):

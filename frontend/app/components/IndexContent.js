@@ -1,7 +1,10 @@
 'use client'
 import React, { useState } from 'react'
+import { useRouter, useParams } from 'next/navigation'
 
-export default function IndexContent({ pdf, onContentRequest, onSectionSelect }) {
+export default function IndexContent({ pdf }) {
+  const router = useRouter()
+  const params = useParams()
   const [selectedSection, setSelectedSection] = useState(null)
   const [selectedSubsection, setSelectedSubsection] = useState(null)
 
@@ -25,29 +28,28 @@ export default function IndexContent({ pdf, onContentRequest, onSectionSelect })
     const targetSection = subsection || section
     const startPage = targetSection.start_pdf_page
     const endPage = targetSection.start_pdf_page + 2 // Default to 3 pages, can be made configurable
+    const topic = targetSection.section_title || targetSection.subsection_title || 'General Topic'
+    const sectionTitle = section.section_title || ''
+    const subsectionTitle = subsection ? subsection.subsection_title : ''
     
-    if (action === 'flashcard' || action === 'quiz') {
-      // For flashcards and quizzes, use onSectionSelect with action type
-      if (onSectionSelect) {
-        onSectionSelect({
-          section_title: section.section_title,
-          subsection_title: subsection ? subsection.subsection_title : null,
-          start_pdf_page: startPage,
-          end_pdf_page: endPage,
-          summary: targetSection.summary,
-          action: action
-        })
-      }
-    } else if (onContentRequest) {
-      // For read and explain, use onContentRequest
-      onContentRequest({
-        start_page: startPage,
-        end_page: endPage,
-        topic: targetSection.section_title || targetSection.subsection_title,
-        type: action,
-        section_title: section.section_title,
-        subsection_title: subsection ? subsection.subsection_title : null
-      })
+    // Build query parameters
+    const queryParams = new URLSearchParams({
+      start_page: startPage.toString(),
+      end_page: endPage.toString(),
+      topic: topic,
+      section_title: sectionTitle,
+      subsection_title: subsectionTitle
+    })
+    
+    // Navigate to the appropriate page based on action
+    if (action === 'read') {
+      router.push(`/pdf/${params.id}/read?${queryParams.toString()}`)
+    } else if (action === 'explain') {
+      router.push(`/pdf/${params.id}/explain?${queryParams.toString()}`)
+    } else if (action === 'flashcard') {
+      router.push(`/pdf/${params.id}/flashcard?${queryParams.toString()}`)
+    } else if (action === 'quiz') {
+      router.push(`/pdf/${params.id}/quiz?${queryParams.toString()}`)
     }
   }
 

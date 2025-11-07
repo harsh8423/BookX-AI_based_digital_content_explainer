@@ -107,6 +107,10 @@ export class AuthService {
     }
   }
 
+  getToken() {
+    return this.token;
+  }
+
   getAuthHeaders() {
     return this.token ? { 'Authorization': `Bearer ${this.token}` } : {};
   }
